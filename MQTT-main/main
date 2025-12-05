@@ -1,0 +1,135 @@
+import sys
+from PyQt5 import QtWidgets, uic
+from PyQt5.QtCore import pyqtSignal, QObject
+import paho.mqtt.client as mqtt
+
+# --- КОНФИГУРАЦИЯ MQTT (Ваши данные) ---
+BROKER = "m3.wqtt.ru"
+PORT = 14293
+USER = "u_HQ01W1"
+PASS = "UrZkrnqL"
+
+TOPIC_SUB = "luxmeter/data"   # Откуда читаем люксы
+TOPIC_PUB = "leds/control"    # Куда отправляем яркость (R:Y:G)
+
+# --- КЛАСС ДЛЯ РАБОТЫ С MQTT (В ФОНЕ) ---
+class MqttWorker(QObject):
+    # Сигнал, который будет передавать текст сообщения в GUI
+    message_received = pyqtSignal(str)
+
+    def init(self):
+        super().init()
+        # Настройка клиента
+        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+        self.client.username_pw_set(USER, PASS)
+        self.client.on_connect = self.on_connect
+        self.client.on_message = self.on_message
+
+    def start(self):
+        try:
+            self.client.connect(BROKER, PORT, 60)
+            # loop_start запускает отдельный поток для сети, чтобы GUI не вис
+            self.client.loop_start() 
+        except Exception as e:
+            print(f"Ошибка подключения к брокеру: {e}")
+
+    def on_connect(self, client, userdata, flags, rc):
+        print(f"Подключено к MQTT (код {rc})")
+        client.subscribe(TOPIC_SUB)
+
+    def on_message(self, client, userdata, msg):
+        try:
+            payload = msg.payload.decode()
+            # Отправляем данные в основной поток через сигнал
+            self.message_received.emit(payload)
+        except Exception as e:
+            print(f"Ошибка декодирования: {e}")
+
+    def send_command(self, payload):
+        self.client.publish(TOPIC_PUB, payload)
+
+# --- ОСНОВНОЕ ОКНО ПРИЛОЖЕНИЯ ---
+class AppWindow(QtWidgets.QMainWindow):
+    def init(self):
+        super(AppWindow, self).init()
+        # Загружаем ваш дизайн из файла
+        uic.loadUi('g.ui', self)
+
+        # Храним последнее значение люксов
+        self.current_lux = 0
+
+        # Запускаем MQTT
+        self.mqtt = MqttWorker()
+        self.mqtt.message_received.connect(self.update_incoming_data)
+        self.mqtt.start()
+
+        # Подключаем элементы интерфейса к функции пересчета
+        # Если изменили яркость или нажали галочку -> сразу пересчитать и отправить
+        self.spinBox_brightness.valueChanged.connect(self.calculate_logic)
+        self.checkBox_red.stateChanged.connect(self.calculate_logic)
+        self.checkBox_yellow.stateChanged.connect(self.calculate_logic)
+        self.checkBox_green.stateChanged.connect(self.calculate_logic)
+
+    def update_incoming_data(self, payload):
+        """Эта функция вызывается, когда приходят данные с MQTT"""
+        # 1. Добавляем в лог на экране
+        self.listWidget_logs.addItem(f"Lux: {payload}")
+        self.listWidget_logs.scrollToBottom()
+
+        # 2. Пробуем преобразовать в число и пересчитать логику
+        try:
+            self.current_lux = int(payload)
+            self.calculate_logic()
+        except ValueError:
+            print(f"Пришли некорректные данные: {payload}")
+
+    def calculate_logic(self):
+        """Здесь происходит вся магия управления"""
+        
+        # 1. Берем текущие настройки из интерфейса
+        brightness = self.spinBox_brightness.value() # Значение от 0 до 1023
+        
+        use_red = self.checkBox_red.isChecked()
+        use_yellow = self.checkBox_yellow.isChecked()
+        use_green = self.checkBox_green.isChecked()
+
+        lux = self.current_lux
+
+        # 2. Определяем, какие цвета должны гореть (по условию лабы)
+        val_r, val_y, val_g = 0, 0, 0
+
+        if lux > 700:
+            # Светло -> Все выключено
+            pass 
+        elif 400 < lux <= 700:
+            # Сумерки -> Зеленый
+            val_g = brightness
+        elif 150 < lux <= 400:
+            # Темно -> Желтый + Зеленый
+            val_y = brightness
+            val_g = brightness
+        else: # lux <= 150
+            # Ночь -> Все горят
+            val_r = brightness
+            val_y = brightness
+            val_g = brightness
+
+
+# 3. Применяем ручные выключатели (галочки)
+        # Если галочка снята, то принудительно ставим 0, даже если логика говорит включить
+        if not use_red: val_r = 0
+        if not use_yellow: val_y = 0
+        if not use_green: val_g = 0
+
+        # 4. Формируем строку для Arduino: "R:Y:G"
+        command = f"{val_r}:{val_y}:{val_g}"
+
+        # 5. Отправляем
+        self.mqtt.send_command(command)
+        # print(f"Отправлено: {command} (При Lux: {lux})")
+
+if name == 'main':
+    app = QtWidgets.QApplication(sys.argv)
+    window = AppWindow()
+    window.show()
+    sys.exit(app.exec_())

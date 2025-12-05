@@ -1,0 +1,81 @@
+import paho.mqtt.client as mqtt
+import logging
+
+# --- ВАШИ НАСТРОЙКИ ---
+BROKER = "m3.wqtt.ru"
+PORT = 14293
+USER = "u_HQ01W1"
+PASS = "UrZkrnqL" 
+TOPIC_DATA = "luxmeter/data"
+TOPIC_CMD = "relay/command"
+THRESHOLD = 500 
+ 
+TOPIC_DATA = "luxmeter/data"        # Вход: данные датчика
+TOPIC_SET_BRIGHT = "user/brightness" # Вход: настройка яркости от пользователя
+TOPIC_CONTROL = "leds/control"       # Выход: команда на плату
+
+# Глобальная переменная яркости (по умолчанию максимум)
+current_max_brightness = 1023 
+
+def on_connect(client, userdata, flags, rc):
+    print(f"Подключено к {BROKER}")
+    client.subscribe(TOPIC_DATA)
+    client.subscribe(TOPIC_SET_BRIGHT)
+
+def on_message(client, userdata, msg):
+    global current_max_brightness
+    
+    payload = msg.payload.decode()
+
+    # 1. Если пришла команда на смену яркости
+    if msg.topic == TOPIC_SET_BRIGHT:
+        try:
+            new_val = int(payload)
+            if 0 <= new_val <= 1023:
+                # Обновляем яркость только если она изменилась
+                if new_val != current_max_brightness:
+                    current_max_brightness = new_val
+                    print(f"Яркость установлена: {current_max_brightness}")
+            else:
+                print(f"Ошибка яркости: вне диапазона 0-1023 ({new_val})")
+        except ValueError:
+            print(f"Ошибка: Неверный формат данных для яркости ({payload})")
+
+    # 2. Если пришли данные с датчика света
+    elif msg.topic == TOPIC_DATA:
+        try:
+            lux = int(payload)
+            
+            command = "0:0:0"
+            
+            # Логика каскадного включения
+            if lux > 700:
+                # Светло -> Все выключено
+                command = "0:0:0"
+            elif 400 < lux <= 700:
+                # Сумерки -> Горит Зеленый
+                command = f"0:0:{current_max_brightness}"
+            elif 150 < lux <= 400:
+                # Темно -> Горят Желтый + Зеленый
+                command = f"0:{current_max_brightness}:{current_max_brightness}"
+            else: # lux <= 150
+                # Ночь -> Горят Все
+                command = f"{current_max_brightness}:{current_max_brightness}:{current_max_brightness}"
+                
+            # Отправляем команду на плату (без лишнего вывода)
+            client.publish(TOPIC_CONTROL, command)
+            
+        except ValueError:
+            # Игнорируем нечисловые данные с датчика
+            pass
+
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+client.username_pw_set(USER, PASS)
+client.on_connect = on_connect
+client.on_message = on_message
+
+try:
+    client.connect(BROKER, PORT, 60)
+    client.loop_forever()
+except Exception as e:
+    print(f"Критическая ошибка: {e}")

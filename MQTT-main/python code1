@@ -1,0 +1,54 @@
+import paho.mqtt.client as mqtt
+import logging
+
+# --- ВАШИ НАСТРОЙКИ ---
+BROKER = "m3.wqtt.ru"
+PORT = 14293
+USER = "u_HQ01W1"
+PASS = "UrZkrnqL" 
+TOPIC_DATA = "luxmeter/data"
+TOPIC_CMD = "relay/command"
+THRESHOLD = 500 
+
+# Включаем подробный лог (покажет ВСЁ, что происходит)
+logging.basicConfig(level=logging.DEBUG)
+
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        print("\n>>> УСПЕШНО ПОДКЛЮЧИЛИСЬ К БРОКЕРУ! <<<")
+        print(f">>> Подписываюсь на топик: {TOPIC_DATA}")
+        client.subscribe(TOPIC_DATA)
+    else:
+        print(f"\n>>> ОШИБКА ПОДКЛЮЧЕНИЯ. Код: {rc}")
+
+def on_message(client, userdata, msg):
+    try:
+        payload = msg.payload.decode()
+        print(f"\n>>> ПОЛУЧЕНО СООБЩЕНИЕ! Топик: {msg.topic}, Данные: {payload}")
+        
+        lux_value = int(payload)
+        
+        if lux_value < THRESHOLD:
+            print(">>> ТЕМНО! Отправляю команду ON...")
+            client.publish(TOPIC_CMD, "ON")
+        else:
+            print(">>> СВЕТЛО! Отправляю команду OFF...")
+            client.publish(TOPIC_CMD, "OFF")
+    except Exception as e:
+        print(f"Ошибка обработки: {e}")
+
+# Создаем клиента (явно указываем версию, чтобы убрать ошибку DeprecationWarning)
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+client.username_pw_set(USER, PASS)
+client.on_connect = on_connect
+client.on_message = on_message
+
+# Включаем внутренний логгер MQTT
+client.enable_logger()
+
+print("Попытка соединения с сервером...")
+try:
+    client.connect(BROKER, PORT, 60)
+    client.loop_forever()
+except Exception as e:
+    print(f"Ошибка соединения: {e}")

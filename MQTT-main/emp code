@@ -1,0 +1,91 @@
+#include <PubSubClient.h>
+#include <ESP8266WiFi.h>
+
+// --- НАСТРОЙКИ ---
+const char* ssid = "samgtu_emp";
+const char* password = "ooChaThee4";
+const char* mqtt_server = "m3.wqtt.ru"; 
+const int mqtt_port = 14293;            
+const char* mqtt_user = "u_HQ01W1";      
+const char* mqtt_pass = "UrZkrnqL";     
+
+// --- ПИНЫ ---
+// Используем GPIO номера для Wemos D1 R2
+const int pinRed = 14;    // D13
+const int pinYellow = 12; // D12
+const int pinGreen = 13;  // D11
+const int photoresistorPin = A0; 
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// Функция для разбивки строки "1023:1023:0" на три числа
+void parseAndSetLeds(String msg) {
+  int firstColon = msg.indexOf(':');
+  int secondColon = msg.lastIndexOf(':');
+  
+  if (firstColon > 0 && secondColon > 0) {
+    String rVal = msg.substring(0, firstColon);
+    String yVal = msg.substring(firstColon + 1, secondColon);
+    String gVal = msg.substring(secondColon + 1);
+    
+    // analogWrite управляет яркостью (ШИМ) от 0 до 1023
+    analogWrite(pinRed, rVal.toInt());
+    analogWrite(pinYellow, yVal.toInt());
+    analogWrite(pinGreen, gVal.toInt());
+  }
+}
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  String message;
+  for (int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  
+  if (String(topic) == "leds/control") {
+    parseAndSetLeds(message);
+  }
+}
+
+void setup() {
+  pinMode(pinRed, OUTPUT);
+  pinMode(pinYellow, OUTPUT);
+  pinMode(pinGreen, OUTPUT);
+  
+  // Сброс в 0
+  analogWrite(pinRed, 0);
+  analogWrite(pinYellow, 0);
+  analogWrite(pinGreen, 0);
+
+  Serial.begin(115200);
+  connectToWifi();
+  client.setServer(mqtt_server, mqtt_port); 
+  client.setCallback(callback);
+}
+
+void loop() {
+  if (!client.connected()) reconnect();
+  client.loop();
+  
+  int lightLevel = analogRead(photoresistorPin);
+  client.publish("luxmeter/data", String(lightLevel).c_str());
+  delay(500); 
+}
+
+void connectToWifi() {
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+  }
+}
+
+void reconnect() {
+  while (!client.connected()) {
+    String clientId = "ESP-" + String(random(0xffff), HEX);
+    if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
+      client.subscribe("leds/control"); 
+    } else {
+      delay(5000);
+    }
+  }
+}
