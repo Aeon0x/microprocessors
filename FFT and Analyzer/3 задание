@@ -1,0 +1,137 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include "arduinoFFT.h"
+
+// ================= НАСТРОЙКИ =================
+#define SAMPLES 128               // Можно менять: 64, 128, 256
+#define SAMPLING_FREQUENCY 8000   // Гц
+#define MIC_PIN A0                // Пин микрофона
+
+// ================= LCD НАСТРОЙКИ =================
+LiquidCrystal_I2C lcd(0x27, 16, 2);  // Адрес дисплея может быть 0x27 или 0x3F
+
+// ================= МАССИВЫ FFT =================
+double vReal[SAMPLES];
+double vImag[SAMPLES];
+ArduinoFFT<double> FFT = ArduinoFFT<double>(vReal, vImag, SAMPLES, SAMPLING_FREQUENCY);
+
+// Период выборки в микросекундах
+unsigned int samplingPeriodUs;
+
+// ================= СИМВОЛЫ ДЛЯ СТОЛБИКОВ =================
+// 8 уровней заполнения для столбиков
+byte barLevels[8][8] = {
+  {B00000, B00000, B00000, B00000, B00000, B00000, B00000, B11111}, // Уровень 1 (20%)
+  {B00000, B00000, B00000, B00000, B00000, B00000, B11111, B11111}, // Уровень 2 (30%)
+  {B00000, B00000, B00000, B00000, B00000, B11111, B11111, B11111}, // Уровень 3 (40%)
+  {B00000, B00000, B00000, B00000, B11111, B11111, B11111, B11111}, // Уровень 4 (50%)
+  {B00000, B00000, B00000, B11111, B11111, B11111, B11111, B11111}, // Уровень 5 (60%)
+  {B00000, B00000, B11111, B11111, B11111, B11111, B11111, B11111}, // Уровень 6 (70%)
+  {B00000, B11111, B11111, B11111, B11111, B11111, B11111, B11111}, // Уровень 7 (80%)
+  {B11111, B11111, B11111, B11111, B11111, B11111, B11111, B11111}  // Уровень 8 (100%)
+};
+
+// Массив для хранения уровней громкости (8 столбиков на экране)
+int barHeights[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+// Для сглаживания (чтобы столбики не дергались)
+int smoothedHeights[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+
+void setup() {
+    Serial.begin(115200);
+    
+    // Инициализация LCD
+    lcd.init();
+    lcd.backlight();
+    lcd.clear();
+    
+    // Создаем пользовательские символы для столбиков
+    for(int i = 0; i < 8; i++) {
+        lcd.createChar(i, barLevels[i]);
+    }
+    
+    // Показываем стартовое сообщение
+    lcd.setCursor(0, 0);
+    lcd.print("Audio Spectrum");
+    lcd.setCursor(0, 1);
+    lcd.print("Analyzer...");
+    delay(2000);
+    lcd.clear();
+    
+    // Расчет периода выборки
+    samplingPeriodUs = round(1000000.0 / SAMPLING_FREQUENCY);
+    
+    // Инфо в Serial
+    Serial.println("FFT Audio Spectrum Analyzer Started");
+    Serial.print("Samples: "); Serial.println(SAMPLES);
+    Serial.print("Freq: "); Serial.println(SAMPLING_FREQUENCY);
+}
+
+void loop() {
+    unsigned long startMicros;
+
+    // --------- СБОР ДАННЫХ С МИКРОФОНА ---------
+    for (int i = 0; i < SAMPLES; i++) {
+        startMicros = micros();
+        vReal[i] = analogRead(MIC_PIN);
+        vImag[i] = 0;
+
+        // Точная частота дискретизации
+        while (micros() - startMicros < samplingPeriodUs);
+    }
+
+    // --------- ВЫЧИСЛЕНИЕ FFT ---------
+    FFT.windowing(vReal, SAMPLES, FFT_WIN_TYP_HAMMING, FFT_FORWARD);
+    FFT.compute(vReal, vImag, SAMPLES, FFT_FORWARD);
+    FFT.complexToMagnitude(vReal, vImag, SAMPLES);
+
+    // --------- АНАЛИЗ ЧАСТОТНЫХ ДИАПАЗОНОВ ДЛЯ 8 СТОЛБИКОВ ---------
+    int samplesPerBand = (SAMPLES/2 - 2) / 8;  // Делим спектр на 8 полос
+    
+    for(int band = 0; band < 8; band++) {
+        double sum = 0;
+        int startIndex = 2 + band * samplesPerBand;
+        int endIndex = startIndex + samplesPerBand;
+        
+        // Суммируем амплитуды в полосе частот
+        for(int i = startIndex; i < endIndex && i < SAMPLES/2; i++) {
+            sum += vReal[i];
+        }
+        
+        // Нормализуем и масштабируем (0-7)
+        double avg = sum / samplesPerBand;
+        
+        // Логарифмическая шкала лучше для звука
+        double logValue = log10(avg + 1) * 2;
+        
+        // Масштабирование под 8 уровней
+        barHeights[band] = constrain((int)logValue, 0, 7);
+        
+        // Сглаживание (низкочастотный фильтр)
+        smoothedHeights[band] = smoothedHeights[band] * 0.7 + barHeights[band] * 0.3;
+    }
+
+    // --------- ОТОБРАЖЕНИЕ НА LCD ---------
+    lcd.clear();
+    
+    // Верхняя строка - первые 8 столбиков (частоты)
+    for(int col = 0; col < 8; col++) {
+        lcd.setCursor(col, 0);
+        lcd.write((int)smoothedHeights[col]);  // Отображаем созданные символы
+    }
+    
+    // Нижняя строка - вторые 8 столбиков (для 16x2 можно дублировать или показать другие частоты)
+    for(int col = 0; col < 8; col++) {
+        lcd.setCursor(col, 1);
+        // Можно использовать другие полосы частот или те же
+        lcd.write((int)smoothedHeights[col]);  // Для простоты дублируем
+    }
+    
+    // --------- ОТЛАДОЧНАЯ ИНФОРМАЦИЯ В SERIAL ---------
+    for (int i = 2; i < SAMPLES / 2; i++) {
+        Serial.print(vReal[i]);
+        if (i < (SAMPLES / 2 - 1)) Serial.print(",");
+    }
+    Serial.println();
+
+    delay(50);  // Небольшая пауза для стабильности
+}

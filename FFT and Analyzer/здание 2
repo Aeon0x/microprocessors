@@ -1,0 +1,49 @@
+#include "arduinoFFT.h"
+
+// ================= НАСТРОЙКИ =================
+#define SAMPLES 128               // Можно менять: 64, 128, 256
+#define SAMPLING_FREQUENCY 8000   // Гц
+
+// ================= МАССИВЫ =================
+double vReal[SAMPLES];
+double vImag[SAMPLES];
+
+// Создаем объект FFT
+ArduinoFFT<double> FFT = ArduinoFFT<double>(vReal, vImag, SAMPLES, SAMPLING_FREQUENCY);
+
+// Период выборки в микросекундах
+unsigned int samplingPeriodUs;
+
+void setup() {
+    Serial.begin(115200);
+    samplingPeriodUs = round(1000000.0 / SAMPLING_FREQUENCY);
+}
+
+// ================= ОСНОВНОЙ ЦИКЛ =================
+void loop() {
+    unsigned long startMicros;
+
+    // --------- СБОР ДАННЫХ ---------
+    for (int i = 0; i < SAMPLES; i++) {
+        startMicros = micros();        // старт отсчета
+        vReal[i] = analogRead(A0);
+        vImag[i] = 0;
+
+        // Busy-wait до следующего отсчета, чтобы точная частота дискретизации
+        while (micros() - startMicros < samplingPeriodUs);
+    }
+
+    // --------- ВЫЧИСЛЕНИЕ FFT ---------
+    FFT.windowing(vReal, SAMPLES, FFT_WIN_TYP_HAMMING, FFT_FORWARD);
+    FFT.compute(vReal, vImag, SAMPLES, FFT_FORWARD);
+    FFT.complexToMagnitude(vReal, vImag, SAMPLES);
+
+    // --------- ВЫВОД СПЕКТРА В SERIAL ---------
+    for (int i = 2; i < SAMPLES / 2; i++) { // пропускаем DC и первый бин
+        Serial.print(vReal[i]);
+        if (i < (SAMPLES / 2 - 1)) Serial.print(",");
+    }
+    Serial.println();
+
+    delay(5);  // небольшая пауза для стабильности графика
+}
